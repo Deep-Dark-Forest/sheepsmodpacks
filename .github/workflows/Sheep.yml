@@ -1,0 +1,66 @@
+# This is a workflow to lock issues that have more than 30 comments in an hour
+
+name: Lock hot issues
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get issue number
+        id: issue
+        run: echo "::set-output name=number::$ { { github.event.issue.number } }"
+      - name: Get issue comments
+        id: comments
+        uses: octokit/request-action@v2.x
+        with:
+          route: GET /repos/$ { { github.repository } }/issues/$ { { steps.issue.outputs.number } }/comments
+          mediaType: '{"previews":["squirrel-girl-preview"]}'
+        env:
+          GITHUB_TOKEN: $ { { secrets.GITHUB_TOKEN } }
+      - name: Get comment count and latest comment time
+        id: stats
+        run: |
+          comments=$ { { steps.comments.outputs.data }}
+          count=$(echo "$comments" | jq '. | length')
+          latest=$(echo "$comments" | jq '.[-1].created_at' | tr -d '"')
+          echo "::set-output name=count::$count"
+          echo "::set-output name=latest::$latest"
+      - name: Check if issue is hot
+        id: check
+        run: |
+          count=$ { { steps.stats.outputs.count }}
+          latest=$ { { steps.stats.outputs.latest }}
+          now=$(date --utc +"%Y-%m-%dT%H:%M:%SZ")
+          diff=$(($(date -d "$now" +%s) - $(date -d "$latest" +%s)))
+          limit=$((60 * 60)) # one hour in seconds
+          threshold=30 # comment count threshold
+          if [[ $count -gt $threshold && $diff -lt $limit ]]; then
+            echo "Issue is hot, need to lock"
+            echo "::set-output name=lock::true"
+          else
+            echo "Issue is not hot, no need to lock"
+            echo "::set-output name=lock::false"
+          fi
+      - name: Post a comment before locking
+        if: $ { { steps.check.outputs.lock == 'true' } }
+        uses: actions/github-script@v4
+        with:
+          script: |
+            await github.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: process.env.COMMENT_BODY
+            })
+        env:
+          COMMENT_BODY: "我们无奈宣布此issue的评论区将会被锁定。这个issue在过去的一小时内新增的留言数目已经超过了30条，所以为了保证issue被正常处理，我们将会暂时锁定评论区。"
+      - name: Lock issue
+        if: $ { { steps.check.outputs.lock == 'true' } }
+        uses: OSDKDev/lock-issues@v1.1
+        with:
+          repo-token: $ { { secrets.GITHUB_TOKEN } }
+          reason: too heated
